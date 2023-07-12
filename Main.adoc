@@ -59,6 +59,7 @@ endif::[]
 :sectnums:
 include::Chapter1.adoc[]
 
+include::Chapter2.adoc[]
 
 // Appendix Section below here
 

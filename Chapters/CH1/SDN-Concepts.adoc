@@ -1,0 +1,307 @@
+:pygments-style: tango
+:source-highlighter: pygments
+:toc:
+:toclevels: 7
+:sectnums:
+:sectnumlevels: 6
+:numbered:
+:chapter-label:
+:icons: font
+ifndef::env-github[:icons: font]
+ifdef::env-github[]
+:status:
+:outfilesuffix: .adoc
+:caution-caption: :fire:
+:important-caption: :exclamation:
+:note-caption: :paperclip:
+:tip-caption: :bulb:
+:warning-caption: :warning:
+endif::[]
+:imagesdir: ./images/
+
+
+=== Defining Software Defined Networks
+
+This section presents the reasoning why OpenShift Container Platform depends on Software-Defined Networks and what they are.
+
+==== Why using Software-Defined Networks in a cloud environment?
+
+Software-defined networks enable dynamic and programmatic network configuration in order to improve network performance and monitoring. 
+
+It is a different approach than addressing static architecture of traditional networks and may be employed to centralize network intelligence in one network component by disassociating the forwarding process of network packets (data plane) from the routing process (control plane).
+
+It relies on a OpenFlow protocol to manage network devices and all packages transported by them.
+
+===== SDN Control Plane
+
+The implementation of a SDN control plane might be centralized, hierarchical, or distributed. 
+
+A centralized solution, where a single control entity has a global view of the network, simplifies the implementation of the control logic, it has scalability limitations as the size and dynamics of the network increase. 
+
+A hierarchical solution distributes controllers to operate on a partitioned network view, while decisions that require network-wide knowledge are taken by a logically centralized root controller. 
+
+In distributed approaches, controllers operate on their local view or they may exchange synchronization messages to enhance their knowledge. Distributed solutions are more suitable for supporting adaptive SDN applications.
+
+===== SDN Data Plane
+
+The data plane is responsible for processing data-carrying packets using a set of rules specified by the control plane. The data plane may be implemented in physical hardware switches or in software implementations, such as Open vSwitch. The memory capacity of hardware switches may limit the number of rules that can be stored where as software implementations may have higher capacity.
+
+
+==== OpenShift and the software defined network
+
+OpenShift supports multiple SDN plugins to support specific use cases. 
+
+If not explicitely defined, OpenShift deploys the OVN-Kubernetes SDN plugin.  Alternatively, it also provides OpenShift SDN plugin that was used in previous versions of OpenShift and it provides backward compatibility to old clusters. 
+
+[IMPORTANT]
+====
+These plugins must be configured during the installation of OpenShift! No changes can be done afterwards.
+====
+
+On the top of these SDN implementations, there are other extensions that supports internal network operations like:
+
+. DNS server (OpenDNS)
+. Load balancers in a bare metal environment (MetalLB)
+. Encrypted web traffic (Ingress Controller).
+
+If you need to address multiple SDN plugins, you need to use Multus plugin.
+
+
+Among others that are described in this link:
+
+https://access.redhat.com/documentation/en-us/openshift_container_platform/4.12/html/networking/networking-operators-overview
+
+
+Comparing two major SDN implementations used in OpenShift:
+
+[Default CNI network provider feature comparison]
+|===
+|Feature    |OVN-Kubernetes |OpenShift SDN
+|Egress IPs |Supported   |Supported
+|Egress firewall|Supported |Supported
+|Egress router |Supported |Supported
+|IPsec encryption| Supported |Not supported
+|IPv6|Supported |Not supported
+|Kubernetes network policy |Supported |Partially supported
+|Kubernetes network policy logs |Supported |Not supported
+|Multicast |Supported |Supported
+|===
+
+However OVN-Kubernetes has some limitations:
+
+. In a dual stack network (IPv4/IPv6) must use the same network device as their gateway.
+. As a side effect, both network stacks must configure routing tables with the default gateway.
+. Session stickyness uses the last request as the initial moment to timeout stickyness.
+
+
+.*Exercise: Hands-On Identifying network configuration*
+====
+
+.Log into the OpenShift cluster
+[source,bash]
+----
+[student@workstation ~]$ oc login -u admin -p redhat https://api.ocp4.example.com:6443
+Login successful.
+
+You have access to 70 projects, the list has been suppressed. You can list all projects with 'oc projects'
+
+Using project "default"
+----
+
+.Connect to the `openshift-network-operator` project
+[source,bash]
+----
+[student@workstation ~]$ oc project openshift-network-operator
+Using project "openshift-network-operator" project on server  "https://api.ocp4.example.com:6443"
+----
+
+.Evaluating network configuration
+[source,bash]
+----
+[student@workstation ~]$ oc get network/cluster -o yaml
+apiVersion: config.openshift.io/v1
+kind: Network
+metadata:
+  creationTimestamp: "2023-05-03T18:07:31Z"
+  generation: 2
+  name: cluster
+  resourceVersion: "2938"
+  uid: 824a923d-ea68-4284-8919-958a3455b49e
+spec:
+  clusterNetwork:
+  - cidr: 10.8.0.0/14
+    hostPrefix: 23
+  externalIP:
+    policy: {}
+  networkType: OVNKubernetes
+  serviceNetwork:
+  - 172.30.0.0/16
+status:
+  clusterNetwork:
+  - cidr: 10.8.0.0/14
+    hostPrefix: 23
+  clusterNetworkMTU: 1400
+  networkType: OVNKubernetes
+  serviceNetwork:
+  - 172.30.0.0/16
+
+----
+The networkType field in the spec section defines that we are using OVNKubernetes as OCP network plugin. 
+The clusterNetwork field from the spec section defines which IP addresses will be assigned to pods created by OCP
+THe serviceNetwork field from the spec section defines which IP addresses will be assigned to services created by OCP
+
+
+.Checking IP addresses are assigned in your pods.
+[source,bash]
+----
+[student@workstation ~]$ oc get pods -o wide -A
+NAMESPACE                                          NAME                                                              READY   STATUS      RESTARTS     AGE     IP              NODE       NOMINATED NODE   READINESS GATES
+metallb-system                                     controller-77794f9b74-twbw5                                       2/2     Running     2            12d     10.8.0.86       master01   <none>           <none>
+metallb-system                                     metallb-operator-controller-manager-547ff8dd4-hbpvl               1/1     Running     1            12d     10.8.0.84       master01   <none>           <none>
+metallb-system                                     metallb-operator-webhook-server-85d58867dc-bb6wl                  1/1     Running     1            12d     10.8.0.85       master01   <none>           <none>
+----
+
+[NOTE]
+=====
+There are some pods that must be exposed to external IP addresses as they need to communicate with each other to support
+=====
+
+Note the IP address for the vast majority of these pods are within the 10.8.0.0 network, as defined in the previous configuration.
+
+[IMPORTANT]
+=====
+None of these pods can be accessed using any external source as they are a software defined network that only pods can connect.
+=====
+
+.Checking IP addresses are assigned in your services.
+[source,bash]
+----
+[student@workstation ~]$ oc get svc -o wide -A
+NAMESPACE                                          NAME                                          TYPE           CLUSTER-IP       EXTERNAL-IP                            PORT(S)                               AGE   SELECTOR
+default                                            kubernetes                                    ClusterIP      172.30.0.1       <none>                                 443/TCP                               70d   <none>
+default                                            openshift                                     ExternalName   <none>           kubernetes.default.svc.cluster.local   <none>                                70d   <none>
+kube-system                                        kubelet                                       ClusterIP      None             <none>                                 10250/TCP,10255/TCP,4194/TCP          70d   <none>
+metallb-system                                     controller-monitor-service                    ClusterIP      None             <none>                                 9120/TCP                              12d   app=metallb,component=controller
+metallb-system                                     metallb-operator-controller-manager-service   ClusterIP      172.30.40.172    <none>                                 443/TCP                               8h    control-plane=controller-manager
+----
+
+
+
+.
+[source,bash]
+----
+[student@workstation ~]$ oc get svc -o wide -A
+NAMESPACE                                          NAME                                          TYPE           CLUSTER-IP       EXTERNAL-IP                            PORT(S)                               AGE   SELECTOR
+default                                            kubernetes                                    ClusterIP      172.30.0.1       <none>                                 443/TCP                               70d   <none>
+default                                            openshift                                     ExternalName   <none>           kubernetes.default.svc.cluster.local   <none>                                70d   <none>
+kube-system                                        kubelet                                       ClusterIP      None             <none>                                 10250/TCP,10255/TCP,4194/TCP          70d   <none>
+metallb-system                                     controller-monitor-service                    ClusterIP      None             <none>                                 9120/TCP                              12d   app=metallb,component=controller
+metallb-system                                     metallb-operator-controller-manager-service   ClusterIP      172.30.40.172    <none>                                 443/TCP                               8h    control-plane=controller-manager
+----
+
+The field name presents the service name in the project described in the namespace column. Also notice that the CLUSTER-IP column has IP addresses defined in the serviceNetwork field mentioned previously
+
+
+A pod is bound to a service using a label that matches with a selector field in the service. For example, in the `openshift-apiserver` project:
+
+.
+[source,bash]
+----
+[student@workstation ~]$ oc describe pods -n openshift-apiserver | grep -A5 Labels
+Labels:               apiserver=true
+                      app=openshift-apiserver-a
+                      openshift-apiserver-anti-affinity=true
+                      pod-template-hash=7c949fbc9d
+                      revision=1
+----
+[source,bash]
+[student@workstation ~]$ oc describe svc -n openshift-apiserver | grep -A5 Selector
+Selector:          apiserver=true
+...                                                                                       
+----
+[NOTE]
+=====
+To create a service that is bound to a pod, use the `oc expose pod` command.
+=====
+
+[IMPORTANT]
+=====
+In a real world scenario you will not create a pod and assign it to a service. Actually you will create a controller (Deployment/DeploymentConfig/DaemonSet/StatefulSet) and bound all pods created by these controllers to a service that acts as a load balancer by creating a new service with the `oc expose` command.
+=====
+
+
+==== OVN-Kubernetes Architecture
+
+OVN-Kubernetes architecture
+Introduction to OVN-Kubernetes architecture
+The following diagram shows the OVN-Kubernetes architecture.
+
+OVN-Kubernetes architecture
+Figure 1. OVK-Kubernetes architecture
+The key components are:
+
+Cloud Management System (CMS) - A platform specific client for OVN that provides a CMS specific plugin for OVN integration. The plugin translates the cloud management system’s concept of the logical network configuration, stored in the CMS configuration database in a CMS-specific format, into an intermediate representation understood by OVN.
+
+OVN Northbound database (nbdb) - Stores the logical network configuration passed by the CMS plugin.
+
+OVN Southbound database (sbdb) - Stores the physical and logical network configuration state for OpenVswitch (OVS) system on each node, including tables that bind them.
+
+ovn-northd - This is the intermediary client between nbdb and sbdb. It translates the logical network configuration in terms of conventional network concepts, taken from the nbdb, into logical data path flows in the sbdb below it. The container name is northd and it runs in the ovnkube-master pods.
+
+ovn-controller - This is the OVN agent that interacts with OVS and hypervisors, for any information or update that is needed for sbdb. The ovn-controller reads logical flows from the sbdb, translates them into OpenFlow flows and sends them to the node’s OVS daemon. The container name is ovn-controller and it runs in the ovnkube-node pods.
+
+The OVN northbound database has the logical network configuration passed down to it by the cloud management system (CMS). The OVN northbound Database contains the current desired state of the network, presented as a collection of logical ports, logical switches, logical routers, and more. The ovn-northd (northd container) connects to the OVN northbound database and the OVN southbound database. It translates the logical network configuration in terms of conventional network concepts, taken from the OVN northbound Database, into logical data path flows in the OVN southbound database.
+
+The OVN southbound database has physical and logical representations of the network and binding tables that link them together. Every node in the cluster is represented in the southbound database, and you can see the ports that are connected to it. It also contains all the logic flows, the logic flows are shared with the ovn-controller process that runs on each node and the ovn-controller turns those into OpenFlow rules to program Open vSwitch.
+
+The Kubernetes control plane nodes each contain an ovnkube-master pod which hosts containers for the OVN northbound and southbound databases. All OVN northbound databases form a Raft cluster and all southbound databases form a separate Raft cluster. At any given time a single ovnkube-master is the leader and the other ovnkube-master pods are followers.
+
+
+.*Exercise: Hands-On identifying OVN-Kubernetes resources*
+====
+
+. Identify those pods that are part of the control plane node and compute nodes
+
+.Log into the OpenShift cluster
+[source,bash]
+----
+[student@workstation ~]$ oc login -u admin -p redhat https://api.ocp4.example.com:6443
+Login successful.
+
+You have access to 70 projects, the list has been suppressed. You can list all projects with 'oc projects'
+
+Using project "default"
+----
+
+.Connect to the `openshift-ovn-kubernetes` project
+[source,bash]
+----
+[student@workstation ~]$ oc project openshift-ovn-kubernetes
+Using project "openshift-ovn-kubernetes" project on server  "https://api.ocp4.example.com:6443"
+----
+
+
+.List pods running on the project
+[source,bash]
+----
+[student@workstation ~]$ oc get pods
+[student@workstation ~]$ oc get pods
+NAME                   READY   STATUS    RESTARTS   AGE
+ovnkube-master-pwpqq   6/6     Running   30         70d
+ovnkube-node-lgzz7     5/5     Running   25         70d
+----
+
+.List all containers running on a pod
+[source,bash]
+----
+[student@workstation ~]$ oc get pods
+[student@workstation ~]$ oc get pods
+NAME                   READY   STATUS    RESTARTS   AGE
+ovnkube-master-pwpqq   6/6     Running   30         70d
+ovnkube-node-lgzz7     5/5     Running   25         70d
+----
+.. 
+.. Image: *ubi7*
+
+. Run the container
+====
