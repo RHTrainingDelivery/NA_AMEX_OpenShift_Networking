@@ -94,7 +94,7 @@ However OVN-Kubernetes has some limitations:
 . Session stickyness uses the last request as the initial moment to timeout stickyness.
 
 
-.*Exercise: Hands-On Identifying network configuration*
+.*Exercise: Hands-On Inspecting network configuration on pods and services*
 ====
 
 .Log into the OpenShift cluster
@@ -186,19 +186,6 @@ metallb-system                                     metallb-operator-controller-m
 ----
 
 
-
-.
-[source,bash]
-----
-[student@workstation ~]$ oc get svc -o wide -A
-NAMESPACE                                          NAME                                          TYPE           CLUSTER-IP       EXTERNAL-IP                            PORT(S)                               AGE   SELECTOR
-default                                            kubernetes                                    ClusterIP      172.30.0.1       <none>                                 443/TCP                               70d   <none>
-default                                            openshift                                     ExternalName   <none>           kubernetes.default.svc.cluster.local   <none>                                70d   <none>
-kube-system                                        kubelet                                       ClusterIP      None             <none>                                 10250/TCP,10255/TCP,4194/TCP          70d   <none>
-metallb-system                                     controller-monitor-service                    ClusterIP      None             <none>                                 9120/TCP                              12d   app=metallb,component=controller
-metallb-system                                     metallb-operator-controller-manager-service   ClusterIP      172.30.40.172    <none>                                 443/TCP                               8h    control-plane=controller-manager
-----
-
 The field name presents the service name in the project described in the namespace column. Also notice that the CLUSTER-IP column has IP addresses defined in the serviceNetwork field mentioned previously
 
 
@@ -208,7 +195,7 @@ A pod is bound to a service using a label that matches with a selector field in 
 [source,bash]
 ----
 [student@workstation ~]$ oc describe pods -n openshift-apiserver | grep -A5 Labels
-Labels:               apiserver=true
+Labels:               *apiserver=true*
                       app=openshift-apiserver-a
                       openshift-apiserver-anti-affinity=true
                       pod-template-hash=7c949fbc9d
@@ -216,7 +203,7 @@ Labels:               apiserver=true
 ----
 [source,bash]
 [student@workstation ~]$ oc describe svc -n openshift-apiserver | grep -A5 Selector
-Selector:          apiserver=true
+Selector:          *apiserver=true*
 ...                                                                                       
 ----
 [NOTE]
@@ -226,9 +213,179 @@ To create a service that is bound to a pod, use the `oc expose pod` command.
 
 [IMPORTANT]
 =====
-In a real world scenario you will not create a pod and assign it to a service. Actually you will create a controller (Deployment/DeploymentConfig/DaemonSet/StatefulSet) and bound all pods created by these controllers to a service that acts as a load balancer by creating a new service with the `oc expose` command.
+In a real world scenario do not create a pod and assign it to a service. Actually, create a controller (Deployment/DeploymentConfig/DaemonSet/StatefulSet) and bound all pods created by these controllers to a service that acts as a load balancer by creating a new service with the `oc expose` command.
 =====
 
+[NOTE]
+====
+If you have two unrelated pods sharing the same label defined in a service selector, the service loads balance the request among these pods. This is a technique admins can use to update versions of a deployment, for instance.
+====
+
+.*Exercise: Hands-On Inspecting the DNS server*
+====
+.Open openshift-dns project 
+[source,bash]
+----
+[student@workstation ~]$ oc project openshift-dns
+----
+
+.Evaluate the DNS Configuration used by OpenShift DNS internal server
+[source,bash]
+----
+[student@workstation ~]$ oc get cm/dns-default -o yaml
+apiVersion: v1
+data:
+  Corefile: |
+    .:5353 {
+        bufsize 512
+        errors
+        log . {
+            class error
+        }
+        health {
+            lameduck 20s
+        }
+        ready
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+            pods insecure
+            fallthrough in-addr.arpa ip6.arpa
+        }
+        prometheus 127.0.0.1:9153
+        forward . /etc/resolv.conf {
+            policy sequential
+        }
+        cache 900 {
+            denial 9984 30
+        }
+        reload
+    }
+    hostname.bind:5353 {
+        chaos
+    }
+kind: ConfigMap
+metadata:
+  creationTimestamp: "2023-05-03T18:27:11Z"
+  labels:
+    dns.operator.openshift.io/owning-dns: default
+  name: dns-default
+  namespace: openshift-dns
+  ownerReferences:
+  - apiVersion: operator.openshift.io/v1
+    controller: true
+    kind: DNS
+    name: default
+    uid: dcf60f95-1192-4b17-8c68-a67297989ca3
+  resourceVersion: "7616"
+  uid: d4a2878e-ae6e-498a-9c22-b1ad20708526
+----
+
+Internally there is a DNS entry that names cluster.local as the internal domain.
+
+Pods and services in OpenShift get a DNS entry to simplify their access. If a pod or a service is available in the same project, the name of the pod or service can be used to access them.
+
+.Creating a new project to explore OpenShift internal DNS server
+[source,bash]
+----
+[student@workstation ~]$ oc new-project example-dns
+----
+
+.Deploy an application to be used to connect to another pod
+[source,bash]
+----
+[student@workstation ~]$  oc create deploy hello-php --image registry.ocp4.example.com:8443/redhattraining/php-hello-dockerfile
+----
+
+.Deploy an application to be used to access the previous hello world app  
+[source,bash]
+----
+[student@workstation ~]$  oc create deploy hello-nginx --image registry.ocp4.example.com:8443/redhattraining/hello-world-nginx
+----
+
+[NOTE]
+====
+Containers are supposed to be slim and some tools are not available, such as `ip` or `netstat`. You must rely on the oc command outputs.
+====
+
+.Check pods names
+[source,bash]
+----
+[student@workstation ~]$ oc get pods -o wide
+NAME                           READY   STATUS    RESTARTS   AGE   IP          NODE       NOMINATED NODE   READINESS GATES
+hello-ngix-589864fd7d-vs5zx   1/1     Running   0          91m   10.8.0.83   master01   <none>           <none>
+hello-php-567f7b5c7c-smhmq     1/1     Running   0          85m   10.8.0.87   master01   <none>           <none>
+----
+
+.Connect to one of the running pods
+[source,bash]
+----
+[student@workstation ~]$ oc rsh hello-php-589864fd7d-vs5zx
+sh-4.4$ 
+----
+.Access the other pod by using the curl command
+[source,bash]
+----
+sh-4.4$ curl 10.8.0.83:8080
+<html>
+  <body>
+    <h1>Hello, world from nginx!</h1>
+  </body>
+</html>
+----
+
+Alternatively, you can use the DNS entry provided by the DNS operator. The DNS entry is like pod-ip-address.my-namespace.pod.cluster-domain.example.
+
+.Accessing using the DNS entry
+[source,bash]
+----
+sh-4.4$ curl 10-8-0-83.example-dns.pod.cluster.local:8080
+<html>
+  <body>
+    <h1>Hello, world from nginx!</h1>
+  </body>
+</html>
+----
+
+As the IP address is dunamically generated, it is not recommended to use the DNS entry of your pod. Instead, create a service that acts like a load balancer:
+.Exit from the pod
+[source,bash]
+----
+sh-4.4$ exit
+[student@workstation ~]$ 
+----
+.Create a service
+[source,bash]
+----
+[student@workstation ~]$ oc expose deploy/hello-php --port 8080
+service/hello exposed
+----
+.Check the service name
+[source,bash]
+----
+[student@workstation ~]$ oc get svc
+NAME    TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+hello-php   ClusterIP   172.30.123.133   <none>    8080/TCP   29s
+----
+.Connect to the pod and check the access using the new service DNS entry
+[source,bash]
+----
+[student@workstation ~]$ oc rsh hello-php-589864fd7d-vs5zx
+sh-4.4$ 
+----
+.Access using the new service DNS entry
+[source,bash]
+----
+sh-4.4$ curl hello-php:8080
+<html>
+  <body>
+    <h1>Hello, world from nginx!</h1>
+  </body>
+</html>
+----
+
+[NOTE]
+====
+In different projects, you need to add the project name into the DNS entry like <projectName>.<serviceName>
+====
 
 ==== OVN-Kubernetes Architecture
 
