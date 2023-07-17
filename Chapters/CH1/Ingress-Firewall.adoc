@@ -1,0 +1,289 @@
+:pygments-style: tango
+:source-highlighter: pygments
+:toc:
+:toclevels: 7
+:sectnums:
+:sectnumlevels: 6
+:numbered:
+:chapter-label:
+:icons: font
+ifndef::env-github[:icons: font]
+ifdef::env-github[]
+:status:
+:outfilesuffix: .adoc
+:caution-caption: :fire:
+:important-caption: :exclamation:
+:note-caption: :paperclip:
+:tip-caption: :bulb:
+:warning-caption: :warning:
+endif::[]
+:imagesdir: ./images/
+
+
+=== Implementing Ingress Node Firewall
+
+Network within a data center must have strict rules, even within the same cluster, like removing ICMP capabilities from those nodes or blocking some ports that malwares might use to access your systems.
+
+In these cases, OpenShift offers the Ingress Node Firewall Operator that allows admins to deploy firewall rules that prevents external agents to access your cluster. It uses eBPF to protect network connections and requires some dependencies, as cert-manager operator and bpfd operator.
+
+
+==== Installing requirements
+
+===== Installing cert-manager operator
+
+This operator allows encrypted network connections using certificates
+
+. In the OpenShift Container Platform web console, click Operators → OperatorHub.
+. Select cert-manager from the list of available Operators, and then click Install.
+. On the Install Operator page, under Installed Namespace, select Operator recommended Namespace.
+. Click Install.
+
+===== Installing bpfd operator
+
+. In the OpenShift Container Platform web console, click Operators → OperatorHub.
+. Select Bpfd Operator from the list of available Operators, and then click Install.
+. On the Install Operator page, under Installed Namespace, select Operator recommended Namespace.
+. Click Install.
+
+In order to create all the infrastructure to connect using eBPF, run the following commands:
+
+.Create a new project
+[source,bash]
+----
+[student@workstation ~]$ oc new-project bpfd                                                                                           
+----
+
+.Create a self signed certificate issuer
+[source,bash]
+----
+oc apply -f https://raw.githubusercontent.com/bpfd-dev/bpfd/main/bpfd-operator/config/bpfd-deployment/cert-issuer.yaml
+----
+.Create a self signed certificate
+[source,bash]
+----
+oc apply -f https://raw.githubusercontent.com/bpfd-dev/bpfd/main/bpfd-operator/config/bpfd-deployment/certs.yaml 
+----
+
+
+==== Installing the Ingress Node Firewall Operator
+
+. In the OpenShift Container Platform web console, click Operators → OperatorHub.
+. Select Ingress Node Firewall Operator from the list of available Operators, and then click Install.
+. On the Install Operator page, under Installed Namespace, select Operator recommended Namespace.
+. Click Install.
+
+Verify that the Ingress Node Firewall Operator is installed successfully:
+
+. Navigate to the Operators → Installed Operators page.
+.Ensure that Ingress Node Firewall Operator is listed in the openshift-ingress-node-firewall project with a Status of InstallSucceeded.
+
+[NOTE]
+====
+During installation an Operator might display a Failed status. If the installation later succeeds with an InstallSucceeded message, you can ignore the Failed message.
+
+If the Operator does not have a Status of InstallSucceeded, troubleshoot using the following steps:
+
+Inspect the Operator Subscriptions and Install Plans tabs for any failures or errors under Status.
+Navigate to the Workloads → Pods page and check the logs for pods in the openshift-ingress-node-firewall project.
+Check the namespace of the YAML file. If the annotation is missing, you can add the annotation workload.openshift.io/allowed=management to the Operator namespace with the following command:
+
+$ oc annotate ns/openshift-ingress-node-firewall workload.openshift.io/allowed=management
+Note
+For single-node OpenShift clusters, the openshift-ingress-node-firewall namespace requires the workload.openshift.io/allowed=management annotation.
+====
+
+==== Configuring the Ingress Node Firewall
+
+To configure and deploy your ingress node firewall each node must have a pod that manages these firewall rules. Kubernetes provides a resource named DaemonSet that deploys on each node only one pod. An `IngressNodeFirewallConfig` custom resource configures all pods managed by the DaemonSet. There are some rules to deploy it though:
+
+. There is only one `IngressNodeFirewallConfig` custom resource for the entire cluster.
+. The resource needs to be created inside the `openshift-ingress-node-firewall` project and be named `ingressnodefirewallconfig`.
+
+The operator will consume this resource and create ingress node firewall daemonset daemon which runs on all nodes that match the nodeSelector.
+
+The following configuration example states that a firewall is configured on all worker nodes.
+
+[source,yaml]
+----
+apiVersion: ingressnodefirewall.openshift.io/v1alpha1
+kind: IngressNodeFirewallConfig
+metadata:
+  name: ingressnodefirewallconfig
+  namespace: openshift-ingress-node-firewall
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+----
+
+Create the `ingressnodefirewallconfig.yaml` text file with your preferred text editor  with the previous content.
+
+And run the following command:
+
+[source,bash]
+----
+[student@workstation ~]$ oc create -f ingressnodefirewallconfig.yaml
+ingressnodefirewallconfig.ingressnodefirewall.openshift.io/ingressnodefirewallconfig created
+----
+
+To configure a firewall rule in all worker nodes, create a firewall rule. The following one creates a rule that is valid only in the `eth0` interface and it accepts access from the network 1.1.1.1 and these connections are allowed to access ports 100 to 200.
+
+[source,yaml]
+----
+apiVersion: ingressnodefirewall.openshift.io/v1alpha1
+kind: IngressNodeFirewall
+metadata:
+  name: ingressnodefirewall-demo-1
+spec:
+  interfaces:
+  - eth0
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+  ingress:
+  - sourceCIDRs:
+       - 1.1.1.1/24
+    rules:
+    - order: 10
+      protocolConfig:
+        protocol: TCP
+        tcp:
+          ports: "100-200"
+      action: Allow
+----
+
+[NOTE]
+====
+The nodeSelector field must either match with the `IngressNodeFirewallConfig` custom resource or bound to a group of nodes that are worker nodes.
+====
+
+To check what network devices are available on a host, access it using a debug pod:
+[source,bash]
+----
+[student@workstation ~]$ oc debug node/master01
+Warning: would violate PodSecurity "restricted:latest": host namespaces (hostNetwork=true, hostPID=true, hostIPC=true), privileged (container "container-00" must not set securityContext.privileged=true), allowPrivilegeEscalation != false (container "container-00" must set securityContext.allowPrivilegeEscalation=false), unrestricted capabilities (container "container-00" must set securityContext.capabilities.drop=["ALL"]), restricted volume types (volume "host" uses restricted volume type "hostPath"), runAsNonRoot != true (pod or container "container-00" must set securityContext.runAsNonRoot=true), runAsUser=0 (container "container-00" must not set runAsUser=0), seccompProfile (pod or container "container-00" must set securityContext.seccompProfile.type to "RuntimeDefault" or "Localhost")
+Starting pod/master01-debug ...
+To use host binaries, run `chroot /host`
+Pod IP: 192.168.50.10
+If you don't see a command prompt, try pressing enter.
+sh-4.4#
+----
+
+To identify which network devices are available run the following command:
+[source,bash]
+----
+sh-4.4# ip a
+...
+8: *br-ex*: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 8192 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/ether 52:54:00:00:32:0a brd ff:ff:ff:ff:ff:ff
+    inet 192.168.50.10/24 brd 192.168.50.255 scope global dynamic noprefixroute br-ex
+       valid_lft 457866971sec preferred_lft 457866971sec
+    inet 169.254.169.2/29 brd 169.254.169.7 scope global br-ex
+       valid_lft forever preferred_lft forever
+    inet6 fe80::5054:ff:fe00:320a/64 scope link noprefixroute
+       valid_lft forever preferred_lft forever
+...
+----
+
+The IP address used by the environment is 192.168.50.xx, and as such, the *br-ex* network bridge is the IP address that all requests are sent.
+
+
+To check that a ping works from the master node to a worker node run:
+
+[source,bash]
+----
+sh-4.4# ping worker01
+...output omitted...
+----
+
+To exit the debug pod:
+[source,bash]
+----
+sh-4.4# exit
+----
+
+
+For the purpose of this exercise, create the following content into the `ingressnodefirewall.yaml` file:
+
+[source,yaml]
+----
+apiVersion: ingressnodefirewall.openshift.io/v1alpha1
+kind: IngressNodeFirewall
+metadata:
+ name: ingressnodefirewall-no-pings
+spec:
+ interfaces:
+ - *br-ex*
+ nodeSelector:
+   matchLabels:
+     node-role.kubernetes.io/worker: ""
+ ingress:
+ - sourceCIDRs:
+      - 192.168.50.0/24
+   rules:
+   - order: 10
+     protocolConfig:
+       protocol: ICMP
+       icmp:
+         icmpType: 8
+         icmpCode: 0
+     action: Deny
+----
+
+The rule blocks pings within all worker nodes.
+
+Install the rule:
+[source,bash]
+----
+[student@workstation ~]$ oc apply -f ingressnodefirewall.yaml
+----
+Check whether your worker nodes were affected:
+
+[source,bash]
+----
+[student@workstation ~]$  oc get ingressnodefirewallnodestates worker01 -o yaml -n openshift-ingress-node-firewall
+kind: IngressNodeFirewallNodeState
+metadata:
+  creationTimestamp: "2023-07-17T17:53:00Z"
+  generation: 8
+  name: worker01
+  namespace: openshift-ingress-node-firewall
+  ownerReferences:
+  - apiVersion: ingressnodefirewall.openshift.io/v1alpha1
+    kind: IngressNodeFirewall
+    name: ingressnodefirewall-zero-trust
+    uid: 647b0bb6-ab94-450a-9d69-d072fb46f0fd
+  resourceVersion: "295940"
+  uid: 8475a056-afd4-41dc-948b-1cc50d53d680
+spec:
+  interfaceIngressRules:
+    ens3:
+    - rules:
+      - action: Deny
+        order: 10
+        protocolConfig:
+          icmp:
+            icmpType: 8
+          protocol: ICMP
+      sourceCIDRs:
+      - 192.168.50.0/24
+status:
+  *syncStatus: Synchronized*
+----
+
+To check whether the ping is blocked in the worker nodes:
+.Connect to the worker01 node
+[source,bash]
+----
+[student@workstation ~]$ oc debug node/worker01
+Warning: would violate PodSecurity "restricted:latest": host namespaces (hostNetwork=true, hostPID=true, hostIPC=true), privileged (container "container-00" must not set securityContext.privileged=true), allowPrivilegeEscalation != false (container "container-00" must set securityContext.allowPrivilegeEscalation=false), unrestricted capabilities (container "container-00" must set securityContext.capabilities.drop=["ALL"]), restricted volume types (volume "host" uses restricted volume type "hostPath"), runAsNonRoot != true (pod or container "container-00" must set securityContext.runAsNonRoot=true), runAsUser=0 (container "container-00" must not set runAsUser=0), seccompProfile (pod or container "container-00" must set securityContext.seccompProfile.type to "RuntimeDefault" or "Localhost")
+Starting pod/worker01-debug ...
+To use host binaries, run `chroot /host`
+Pod IP: 192.168.50.15
+sh-4.4#
+----
+.Execute the `ping` command
+[source,bash]
+----
+sh-4.4# ping worker02
+PING worker02.ocp4.example.com (192.168.50.16) 56(84) bytes of data.
+----
+

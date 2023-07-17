@@ -1,0 +1,47 @@
+:pygments-style: tango
+:source-highlighter: pygments
+:toc:
+:toclevels: 7
+:sectnums:
+:sectnumlevels: 6
+:numbered:
+:chapter-label:
+:icons: font
+ifndef::env-github[:icons: font]
+ifdef::env-github[]
+:status:
+:outfilesuffix: .adoc
+:caution-caption: :fire:
+:important-caption: :exclamation:
+:note-caption: :paperclip:
+:tip-caption: :bulb:
+:warning-caption: :warning:
+endif::[]
+:imagesdir: ./images/
+
+==== OpenShift SDN configuration
+
+OpenShift SDN is an alternative SDN that is supported by Red Hat. To enable it, you need to have it configured during OpenShift installation. Network operator configuration, broadly speaking, is the same as described in the previous sections but there are attributes that might require some customization, depending on which environment OpenShift is deployed.
+
+To configure an OpenShift SDN during installation, add the following lines to the install-config.yaml file:
+
+[source,yaml]
+----
+apiVersion: v1
+baseDomain: example.com
+metadata:
+  name: ocp4
+... 
+Output omitted
+networking:
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  machineNetwork:
+  - cidr: 10.0.0.0/16
+  networkType: OpenShiftSDN
+  serviceNetwork:
+  - 172.30.0.0/16
+... 
+Output omitted
+----

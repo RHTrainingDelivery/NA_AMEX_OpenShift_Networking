@@ -1,0 +1,142 @@
+:pygments-style: tango
+:source-highlighter: pygments
+:toc:
+:toclevels: 7
+:sectnums:
+:sectnumlevels: 6
+:numbered:
+:chapter-label:
+:icons: font
+ifndef::env-github[:icons: font]
+ifdef::env-github[]
+:status:
+:outfilesuffix: .adoc
+:caution-caption: :fire:
+:important-caption: :exclamation:
+:note-caption: :paperclip:
+:tip-caption: :bulb:
+:warning-caption: :warning:
+endif::[]
+:imagesdir: ./images/
+
+
+=== Implementing Multicast in OpenShift
+
+To avoid huge traffic due to multicast packets, OpenShift disables it by default. However, some apps might require that multicast is enabled in a project. To support this condition, OpenShift uses a standardized configuration from Kubernetes to enable multicast. 
+
+
+==== Exercise: Implementing Multicast in OpenShift
+
+.Create a project to run a multicast application
+[source,bash]
+----
+[student@workstation ~]$ oc new-project multicast
+----
+.Create, using your preferred text editor the following content in a file named `mlistener.yaml`:
+[source,yml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mlistener
+  labels:
+    app: multicast-verify
+spec:
+  containers:
+   - name: mlistener
+     image: registry.access.redhat.com/ubi8
+     command: ["/bin/sh", "-c"]
+     args:
+       ["dnf -y install socat hostname && sleep inf"]
+     ports:
+       - containerPort: 30102
+         name: mlistener
+         protocol: UDP
+----
+The previous code creates a pod named mlistener using as Red Hat Universal Base Container Image  (ubi8), and installs a tool named socat. In a later moment, the socat command is used to capture multicast packet sent to the network.
+
+.Create the pod:
+[source,bash]
+----
+[student@workstation ~]$ oc create -f mlistener.yaml
+----
+
+.Create, using your preferred text editor the following content in a file named `msender.yaml`:
+
+[source,yml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: msender
+  labels:
+    app: multicast-verify
+spec:
+  containers:
+    - name: msender
+      image: registry.access.redhat.com/ubi8
+      command: ["/bin/sh", "-c"]
+      args:
+        ["dnf -y install socat && sleep inf"]
+EOF
+----
+The previous code creates a pod named msender using as Red Hat Universal Base Container Image  (ubi8), and installs a tool named socat. In a later moment, the socat command is used to send multicast packet.
+
+Create the pod:
+
+[source,bash]
+----
+[student@workstation ~]$ oc create -f msender.yaml
+----
+
+Start the listener. In order to capture the messages the pod creates a handshake a multicast IP address (224.1.0.1) and identifies itself with its own IP address. However, as OpenShift uses its own software defined network, capture the IP address inside the SDN.
+
+.Capture the IP address from the listener and store it in the POD_IP environment variable
+[source,bash]
+----
+[student@workstation ~]$ POD_IP=$(oc get pods mlistener -o jsonpath='{.status.podIP}')
+----
+
+.Start the listener
+[source,bash]
+----
+[student@workstation ~]$ oc exec mlistener -it -- socat UDP4-RECVFROM:30102,ip-add-membership=224.1.0.1:$POD_IP,fork EXEC:hostname
+----
+
+Leave the command running and open a new terminal window.
+
+Start the multicast transmitter. In order to send messages socat requires that CIDR is provided to connect to the network. To capture it, use the following command:
+.Capture CIDR from the SDN:
+[source,bash]
+----
+[student@workstation ~]$ CIDR=$(oc get Network.config.openshift.io cluster -o jsonpath='{.status.clusterNetwork[0].cidr}')
+----
+
+.Start sending packet to the multicast address
+[source,bash]
+----
+[student@workstation ~]$  oc exec msender -it -- /bin/bash -c "echo | socat STDIO UDP4-DATAGRAM:224.1.0.1:30102,range=$CIDR,ip-multicast-ttl=64"
+----
+
+Check that in the terminal window that your started the listener, no messages are coming. This is because OpenShift blocks multicast within its SDN.
+
+
+Run the following command to enable multicast within the project:
+.Enable multicast on the project.
+[source,bash]
+----
+[student@workstation ~]$ oc annotate namespace multicast *k8s.ovn.org/multicast-enabled=true*
+----
+ 
+ Re-run the sender again.
+
+ In the window running the sender, restart it by hitting Ctrl+C and re run the command:
+ [source,bash]
+----
+[student@workstation ~]$  oc exec msender -it -- /bin/bash -c "echo | socat STDIO UDP4-DATAGRAM:224.1.0.1:30102,range=$CIDR,ip-multicast-ttl=64"
+^C
+[student@workstation ~]$  oc exec msender -it -- /bin/bash -c "echo | socat STDIO UDP4-DATAGRAM:224.1.0.1:30102,range=$CIDR,ip-multicast-ttl=64"
+mlistener
+----
+
+Now the listener sends a message with its own hostname.

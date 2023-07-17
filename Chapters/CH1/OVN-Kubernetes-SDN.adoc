@@ -1,0 +1,530 @@
+:pygments-style: tango
+:source-highlighter: pygments
+:toc:
+:toclevels: 7
+:sectnums:
+:sectnumlevels: 6
+:numbered:
+:chapter-label:
+:icons: font
+ifndef::env-github[:icons: font]
+ifdef::env-github[]
+:status:
+:outfilesuffix: .adoc
+:caution-caption: :fire:
+:important-caption: :exclamation:
+:note-caption: :paperclip:
+:tip-caption: :bulb:
+:warning-caption: :warning:
+endif::[]
+:imagesdir: ./images/
+
+=== Workshop: Customizing OVN-Kubernetes network
+
+.*Exercise: Hands-On Inspecting network configuration on pods and services*
+====
+
+.Log into the OpenShift cluster
+[source,bash]
+----
+[student@workstation ~]$ oc login -u admin -p redhat https://api.ocp4.example.com:6443
+Login successful.
+
+You have access to 70 projects, the list has been suppressed. You can list all projects with 'oc projects'
+
+Using project "default"
+----
+
+.Connect to the `openshift-network-operator` project
+[source,bash]
+----
+[student@workstation ~]$ oc project openshift-network-operator
+Using project "openshift-network-operator" project on server  "https://api.ocp4.example.com:6443"
+----
+
+.Evaluating network configuration
+[source,bash]
+----
+[student@workstation ~]$ oc get network/cluster -o yaml
+apiVersion: config.openshift.io/v1
+kind: Network
+metadata:
+  creationTimestamp: "2023-05-03T18:07:31Z"
+  generation: 2
+  name: cluster
+  resourceVersion: "2938"
+  uid: 824a923d-ea68-4284-8919-958a3455b49e
+spec:
+  clusterNetwork:
+  - cidr: 10.8.0.0/14
+    hostPrefix: 23
+  externalIP:
+    policy: {}
+  networkType: OVNKubernetes
+  serviceNetwork:
+  - 172.30.0.0/16
+status:
+  clusterNetwork:
+  - cidr: 10.8.0.0/14
+    hostPrefix: 23
+  clusterNetworkMTU: 1400
+  networkType: OVNKubernetes
+  serviceNetwork:
+  - 172.30.0.0/16
+
+----
+The networkType field in the spec section defines that we are using OVNKubernetes as OCP network plugin. 
+The clusterNetwork field from the spec section defines which IP addresses will be assigned to pods created by OCP
+THe serviceNetwork field from the spec section defines which IP addresses will be assigned to services created by OCP
+
+
+.Checking IP addresses are assigned in your pods.
+[source,bash]
+----
+[student@workstation ~]$ oc get pods -o wide -A
+NAMESPACE                                          NAME                                                              READY   STATUS      RESTARTS     AGE     IP              NODE       NOMINATED NODE   READINESS GATES
+metallb-system                                     controller-77794f9b74-twbw5                                       2/2     Running     2            12d     10.8.0.86       master01   <none>           <none>
+metallb-system                                     metallb-operator-controller-manager-547ff8dd4-hbpvl               1/1     Running     1            12d     10.8.0.84       master01   <none>           <none>
+metallb-system                                     metallb-operator-webhook-server-85d58867dc-bb6wl                  1/1     Running     1            12d     10.8.0.85       master01   <none>           <none>
+----
+
+[NOTE]
+=====
+There are some pods that must be exposed to external IP addresses as they need to communicate with each other to support
+=====
+
+Note the IP address for the vast majority of these pods are within the 10.8.0.0 network, as defined in the previous configuration.
+
+[IMPORTANT]
+=====
+None of these pods can be accessed using any external source as they are a software defined network that only pods can connect.
+=====
+
+.Checking IP addresses are assigned in your services.
+[source,bash]
+----
+[student@workstation ~]$ oc get svc -o wide -A
+NAMESPACE                                          NAME                                          TYPE           CLUSTER-IP       EXTERNAL-IP                            PORT(S)                               AGE   SELECTOR
+default                                            kubernetes                                    ClusterIP      172.30.0.1       <none>                                 443/TCP                               70d   <none>
+default                                            openshift                                     ExternalName   <none>           kubernetes.default.svc.cluster.local   <none>                                70d   <none>
+kube-system                                        kubelet                                       ClusterIP      None             <none>                                 10250/TCP,10255/TCP,4194/TCP          70d   <none>
+metallb-system                                     controller-monitor-service                    ClusterIP      None             <none>                                 9120/TCP                              12d   app=metallb,component=controller
+metallb-system                                     metallb-operator-controller-manager-service   ClusterIP      172.30.40.172    <none>                                 443/TCP                               8h    control-plane=controller-manager
+----
+
+
+The field name presents the service name in the project described in the namespace column. Also notice that the CLUSTER-IP column has IP addresses defined in the serviceNetwork field mentioned previously
+
+
+A pod is bound to a service using a label that matches with a selector field in the service. For example, in the `openshift-apiserver` project:
+
+.
+[source,bash]
+----
+[student@workstation ~]$ oc describe pods -n openshift-apiserver | grep -A5 Labels
+Labels:               *apiserver=true*
+                      app=openshift-apiserver-a
+                      openshift-apiserver-anti-affinity=true
+                      pod-template-hash=7c949fbc9d
+                      revision=1
+----
+[source,bash]
+[student@workstation ~]$ oc describe svc -n openshift-apiserver | grep -A5 Selector
+Selector:          *apiserver=true*
+...                                                                                       
+----
+[NOTE]
+=====
+To create a service that is bound to a pod, use the `oc expose pod` command.
+=====
+
+[IMPORTANT]
+=====
+In a real world scenario do not create a pod and assign it to a service. Actually, create a controller (Deployment/DeploymentConfig/DaemonSet/StatefulSet) and bound all pods created by these controllers to a service that acts as a load balancer by creating a new service with the `oc expose` command.
+=====
+
+[NOTE]
+====
+If you have two unrelated pods sharing the same label defined in a service selector, the service loads balance the request among these pods. This is a technique admins can use to update versions of a deployment, for instance.
+====
+
+.*Exercise: Hands-On Inspecting the DNS server*
+====
+.Open openshift-dns project 
+[source,bash]
+----
+[student@workstation ~]$ oc project openshift-dns
+----
+
+.Evaluate the DNS Configuration used by OpenShift DNS internal server
+[source,bash]
+----
+[student@workstation ~]$ oc get cm/dns-default -o yaml
+apiVersion: v1
+data:
+  Corefile: |
+    .:5353 {
+        bufsize 512
+        errors
+        log . {
+            class error
+        }
+        health {
+            lameduck 20s
+        }
+        ready
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+            pods insecure
+            fallthrough in-addr.arpa ip6.arpa
+        }
+        prometheus 127.0.0.1:9153
+        forward . /etc/resolv.conf {
+            policy sequential
+        }
+        cache 900 {
+            denial 9984 30
+        }
+        reload
+    }
+    hostname.bind:5353 {
+        chaos
+    }
+kind: ConfigMap
+metadata:
+  creationTimestamp: "2023-05-03T18:27:11Z"
+  labels:
+    dns.operator.openshift.io/owning-dns: default
+  name: dns-default
+  namespace: openshift-dns
+  ownerReferences:
+  - apiVersion: operator.openshift.io/v1
+    controller: true
+    kind: DNS
+    name: default
+    uid: dcf60f95-1192-4b17-8c68-a67297989ca3
+  resourceVersion: "7616"
+  uid: d4a2878e-ae6e-498a-9c22-b1ad20708526
+----
+
+Internally there is a DNS entry that names cluster.local as the internal domain.
+
+Pods and services in OpenShift get a DNS entry to simplify their access. If a pod or a service is available in the same project, the name of the pod or service can be used to access them.
+
+.Creating a new project to explore OpenShift internal DNS server
+[source,bash]
+----
+[student@workstation ~]$ oc new-project example-dns
+----
+
+.Deploy an application to be used to connect to another pod
+[source,bash]
+----
+[student@workstation ~]$  oc create deploy hello-php --image registry.ocp4.example.com:8443/redhattraining/php-hello-dockerfile
+----
+
+.Deploy an application to be used to access the previous hello world app  
+[source,bash]
+----
+[student@workstation ~]$  oc create deploy hello-nginx --image registry.ocp4.example.com:8443/redhattraining/hello-world-nginx
+----
+
+[NOTE]
+====
+Containers are supposed to be slim and some tools are not available, such as `ip` or `netstat`. You must rely on the oc command outputs.
+====
+
+.Check pods names
+[source,bash]
+----
+[student@workstation ~]$ oc get pods -o wide
+NAME                           READY   STATUS    RESTARTS   AGE   IP          NODE       NOMINATED NODE   READINESS GATES
+hello-ngix-589864fd7d-vs5zx   1/1     Running   0          91m   10.8.0.83   master01   <none>           <none>
+hello-php-567f7b5c7c-smhmq     1/1     Running   0          85m   10.8.0.87   master01   <none>           <none>
+----
+
+.Connect to one of the running pods
+[source,bash]
+----
+[student@workstation ~]$ oc rsh hello-php-589864fd7d-vs5zx
+sh-4.4$ 
+----
+.Access the other pod by using the curl command
+[source,bash]
+----
+sh-4.4$ curl 10.8.0.83:8080
+<html>
+  <body>
+    <h1>Hello, world from nginx!</h1>
+  </body>
+</html>
+----
+
+Alternatively, you can use the DNS entry provided by the DNS operator. The DNS entry is like pod-ip-address.my-namespace.pod.cluster-domain.example.
+
+.Accessing using the DNS entry
+[source,bash]
+----
+sh-4.4$ curl 10-8-0-83.example-dns.pod.cluster.local:8080
+<html>
+  <body>
+    <h1>Hello, world from nginx!</h1>
+  </body>
+</html>
+----
+
+As the IP address is dynamically generated, it is not recommended to use the DNS entry of your pod. Instead, create a service that acts like a load balancer:
+.Exit from the pod
+[source,bash]
+----
+sh-4.4$ exit
+[student@workstation ~]$ 
+----
+.Create a service
+[source,bash]
+----
+[student@workstation ~]$ oc expose deploy/hello-php --port 8080
+service/hello exposed
+----
+.Check the service name
+[source,bash]
+----
+[student@workstation ~]$ oc get svc
+NAME    TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+hello-php   ClusterIP   172.30.123.133   <none>    8080/TCP   29s
+----
+.Connect to the pod and check the access using the new service DNS entry
+[source,bash]
+----
+[student@workstation ~]$ oc rsh hello-php-589864fd7d-vs5zx
+sh-4.4$ 
+----
+.Access using the new service DNS entry
+[source,bash]
+----
+sh-4.4$ curl hello-php:8080
+<html>
+  <body>
+    <h1>Hello, world from nginx!</h1>
+  </body>
+</html>
+----
+
+.*Exercise: Hands-On Accessing applications running on different projects*
+
+.Creating a new project to explore OpenShift DNS resolution for different projects
+[source,bash]
+----
+[student@workstation ~]$ oc new-project example-external
+Now using project "example-external" on server "https://api.ocp4.example.com:6443".
+----
+.Creating an HTTPD deploy to test contents
+[source,bash]
+----
+[student@workstation ~]$ oc create deploy httpd --image registry.ocp4.example.com:8443/ubi8/httpd-24
+....
+----
+.Creating a service to connect externally the pods
+[source,bash]
+----
+[student@workstation ~]$ oc expose deploy/httpd --port 8080
+....
+----
+.Creating a second project to explore OpenShift DNS resolution for different projects
+----
+[student@workstation ~]$ oc new-project example-internal
+Now using project "example-internal" on server "https://api.ocp4.example.com:6443".
+...
+----
+.Creating a second pod to explore OpenShift DNS resolution for different projects
+----
+[student@workstation ~]$ oc run -it cli --image registry.ocp4.example.com:8443/openshift/origin-cli:4.12 --command -- /bin/bash
+pod.apps/cli created
+sh-4.4#
+----
+.Accessing the HTTPD welcome page
+----
+sh-4.4# curl httpd.example-internal:8080
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+        <head>
+                <title>Test Page for the HTTP Server on Red Hat Enterprise Linux</title>
+
+----
+.Exit from the pod
+[source,bash]
+----
+sh-4.4# exit
+[student@workstation ~]$ 
+----
+
+.*Exercise: Hands-On Blocking access using NetworkPolicy*
+
+Network policies are a broad equivalent to firewall rules. It does not provide port level restrictions but still it is a way to segregate resources in OpenShift, blocking access to pods.
+
+.Creating a new project to explore OpenShift DNS resolution for different projects
+[source,bash]
+----
+[student@workstation ~]$ oc new-project example-policies
+Now using project "example-policies" on server "https://api.ocp4.example.com:6443".
+----
+.Creating an HTTPD deploy to test contents
+[source,bash]
+----
+[student@workstation ~]$ oc create deploy httpd --image registry.ocp4.example.com:8443/ubi8/httpd-24
+....
+----
+.Creating a service to connect externally the pods
+[source,bash]
+----
+[student@workstation ~]$ oc expose deploy/httpd --port 8080
+....
+----
+.Creating a second pod to explore OpenShift DNS resolution for different projects
+[source,bash]
+----
+[student@workstation ~]$ oc run -it cli --image registry.ocp4.example.com:8443/openshift/origin-cli:4.12 --command -- /bin/bash
+pod.apps/cli created
+sh-4.4#
+----
+.Accessing the HTTPD welcome page
+----
+sh-4.4# curl httpd:8080
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+        <head>
+                <title>Test Page for the HTTP Server on Red Hat Enterprise Linux</title>
+
+----
+In the following NetworkPolicy definition all pods with a label `app=httpd` will be blocked if another pod tries to access it. In order to bypass the limitation it must have `access: true` label.
+
+.Create and save the `network.yaml` text file as below using your preferred text editor:
+[source,yaml]
+----
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: access-httpd
+spec:
+  podSelector:
+    matchLabels:
+      app: httpd
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          access: "true"      
+----
+
+.Deploying the NetworkPolicy resource:
+[source,bash]
+----
+[student@workstation ~]$ oc apply -f network.yaml
+networkpolicy.networking.k8s.io/access-httpd created
+----
+
+.Creating a second pod to check that NetworkPolicy blocks the access to the pod
+[source,bash]
+----
+[student@workstation ~]$ oc run -it cli --image registry.ocp4.example.com:8443/openshift/origin-cli:4.12 --command -- /bin/bash
+pod.apps/cli created
+sh-4.4#
+----
+.Accessing the HTTPD welcome page. `curl` command line hangs because there is no response due to the NetworkPolicy rule.
+[source,bash]
+----
+sh-4.4# curl httpd:8080
+----
+.Deploying a third pod to check that networkpolicy allows access to the pod due to a label:
+[source,bash]
+----
+[student@workstation ~]$ oc run -it cli-allowed --labels="access=true" --image registry.ocp4.example.com:8443/openshift/origin-cli:4.12 --command -- /bin/bash
+pod.apps/cli created
+sh-4.4#
+----
+.Accessing the HTTPD welcome page. `curl` command line hangs because there is no response due to the NetworkPolicy rule.
+[source,bash]
+----
+sh-4.4# curl httpd:8080
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+        <head>
+                <title>Test Page for the HTTP Server on Red Hat Enterprise Linux</title>
+----
+==== OVN-Kubernetes Architecture
+
+OVN-Kubernetes architecture
+Introduction to OVN-Kubernetes architecture
+The following diagram shows the OVN-Kubernetes architecture.
+
+OVN-Kubernetes architecture
+Figure 1. OVK-Kubernetes architecture
+The key components are:
+
+Cloud Management System (CMS) - A platform specific client for OVN that provides a CMS specific plugin for OVN integration. The plugin translates the cloud management system’s concept of the logical network configuration, stored in the CMS configuration database in a CMS-specific format, into an intermediate representation understood by OVN.
+
+OVN Northbound database (nbdb) - Stores the logical network configuration passed by the CMS plugin.
+
+OVN Southbound database (sbdb) - Stores the physical and logical network configuration state for OpenVswitch (OVS) system on each node, including tables that bind them.
+
+ovn-northd - This is the intermediary client between nbdb and sbdb. It translates the logical network configuration in terms of conventional network concepts, taken from the nbdb, into logical data path flows in the sbdb below it. The container name is northd and it runs in the ovnkube-master pods.
+
+ovn-controller - This is the OVN agent that interacts with OVS and hypervisors, for any information or update that is needed for sbdb. The ovn-controller reads logical flows from the sbdb, translates them into OpenFlow flows and sends them to the node’s OVS daemon. The container name is ovn-controller and it runs in the ovnkube-node pods.
+
+The OVN northbound database has the logical network configuration passed down to it by the cloud management system (CMS). The OVN northbound Database contains the current desired state of the network, presented as a collection of logical ports, logical switches, logical routers, and more. The ovn-northd (northd container) connects to the OVN northbound database and the OVN southbound database. It translates the logical network configuration in terms of conventional network concepts, taken from the OVN northbound Database, into logical data path flows in the OVN southbound database.
+
+The OVN southbound database has physical and logical representations of the network and binding tables that link them together. Every node in the cluster is represented in the southbound database, and you can see the ports that are connected to it. It also contains all the logic flows, the logic flows are shared with the ovn-controller process that runs on each node and the ovn-controller turns those into OpenFlow rules to program Open vSwitch.
+
+The Kubernetes control plane nodes each contain an ovnkube-master pod which hosts containers for the OVN northbound and southbound databases. All OVN northbound databases form a Raft cluster and all southbound databases form a separate Raft cluster. At any given time a single ovnkube-master is the leader and the other ovnkube-master pods are followers.
+
+
+.*Exercise: Hands-On identifying OVN-Kubernetes resources*
+====
+
+. Identify those pods that are part of the control plane node and compute nodes
+
+.Log into the OpenShift cluster
+[source,bash]
+----
+[student@workstation ~]$ oc login -u admin -p redhat https://api.ocp4.example.com:6443
+Login successful.
+
+You have access to 70 projects, the list has been suppressed. You can list all projects with 'oc projects'
+
+Using project "default"
+----
+
+.Connect to the `openshift-ovn-kubernetes` project
+[source,bash]
+----
+[student@workstation ~]$ oc project openshift-ovn-kubernetes
+Using project "openshift-ovn-kubernetes" project on server  "https://api.ocp4.example.com:6443"
+----
+
+
+.List pods running on the project
+[source,bash]
+----
+[student@workstation ~]$ oc get pods
+[student@workstation ~]$ oc get pods
+NAME                   READY   STATUS    RESTARTS   AGE
+ovnkube-master-pwpqq   6/6     Running   30         70d
+ovnkube-node-lgzz7     5/5     Running   25         70d
+----
+
+.List all containers running on a pod
+[source,bash]
+----
+[student@workstation ~]$ oc get pods
+[student@workstation ~]$ oc get pods
+NAME                   READY   STATUS    RESTARTS   AGE
+ovnkube-master-pwpqq   6/6     Running   30         70d
+ovnkube-node-lgzz7     5/5     Running   25         70d
+----
+.. 
+.. Image: *ubi7*
+
+. Run the container
+====
