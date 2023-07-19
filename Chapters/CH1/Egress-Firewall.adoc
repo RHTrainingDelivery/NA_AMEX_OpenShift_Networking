@@ -1,0 +1,148 @@
+:pygments-style: tango
+:source-highlighter: pygments
+:toc:
+:toclevels: 7
+:sectnums:
+:sectnumlevels: 6
+:numbered:
+:chapter-label:
+:icons: font
+ifndef::env-github[:icons: font]
+ifdef::env-github[]
+:status:
+:outfilesuffix: .adoc
+:caution-caption: :fire:
+:important-caption: :exclamation:
+:note-caption: :paperclip:
+:tip-caption: :bulb:
+:warning-caption: :warning:
+endif::[]
+:imagesdir: ./images/
+
+
+=== Implementing Egress Firewall
+
+OpenShift projects are open to connect to any microservice hosted on Internet. Despite most companies use third party microservices to support their operation, this openness might bring security concerns and it would be better addressed by an API Gateway like 3scale. To block access to external microservices per project basis, OpenShift provides firewalls rules that prevents anythat a deployed pod in a project cannot have external access.
+
+[IMPORTANT]
+====
+Different from `NetworkPolicy` custom resource, that prevents access inside the cluster, an `EgressFirewall` custom resource prevents access to external sites.
+====
+
+==== Configuring an `EgressFirewall` custom resource
+
+EgressFirewall custom resources are part of the OVN-Kubernetes network therefore, they are already available on OpenShift. It does not require any extra operator to work like an Ingress Node Firewall.
+
+===== Exercise: Deploying an EgressFirewall to prevent DNS lookups
+
+.Create a new project
+[source,bash]
+----
+[student@workstation ~]$ oc new-project egress-fw                                                                                           
+----
+
+In this example, a pod that hosts a simple hello world application is deployed.
+
+.Create a deployment resource on OpenShift that access external resources
+[source,bash]
+----
+[student@workstation ~]$ oc run test-egress --image=quay.io/openshifttest/hello-openshift
+----
+
+To check there is connectivity from the project to an external IP address, run a `ping` command to access Google's DNS IP address (4.4.4.4)
+
+.Execute a ping command to a known address
+[source,bash]
+----
+[student@workstation ~]$ oc debug -ti deploy/test-ingress -- ping -c2 4.4.4.4
+PING 4.4.4.4 (4.4.4.4) 56(84) bytes of data.
+64 bytes from 4.4.4.4: icmp_seq=1 ttl=53 time=4.88 ms
+64 bytes from 4.4.4.4: icmp_seq=2 ttl=53 time=2.74 ms
+----
+
+
+==== Deploy an EgressFirewall custom resource to block access to Google
+
+
+Create the `egress.yaml` text file with your preferred text editor  with the following content. In any EgressFirewall custom resource deployed on OpenShift, its name must be `default`. 
+
+.Save the following content to the `egress.yaml` file.
+[source,yaml]
+----
+apiVersion: k8s.ovn.org/v1
+kind: EgressFirewall
+metadata:
+  name: default
+spec:
+  egress:
+  - type: Allow
+    to:
+      cidrSelector: 8.8.8.8/32
+  - type: Deny
+    to:
+      cidrSelector: 0.0.0.0/0
+----
+
+Any egress firewall definition supports TCP, UDP and SCTP protocols. If needed, the instead of using regular IP address, EgressFirewall custom resources also support DNS entries. Instead of using the `cidrSelector`, the `dnsName` must be used instead. Also, it is possible to use a `nodeSelector` attribute in the same level of the `cidrSelector` to restrict which nodes are supposed to use the rule. This approach is useful to block access to the stage and prod environments but allow access to a dev environment.
+
+And run the following command:
+
+.Create the Egress Firewall
+[source,bash]
+----
+[student@workstation ~]$ oc create -f egress.yaml
+egressfirewall.k8s.ovn.org/default created
+----
+
+To evaluate the configuration run the following command line from the project:
+
+.Test the egress firewall rule. 
+[source,bash]
+----
+[student@workstation ~]$ oc exec -ti test-egress -- ping -c2 8.8.8.8
+PING 8.8.8.8 (8.8.8.8) 56(84) bytes of data.
+64 bytes from 8.8.8.8: icmp_seq=1 ttl=53 time=4.88 ms
+64 bytes from 8.8.8.8: icmp_seq=2 ttl=53 time=2.74 ms
+----
+
+From the output, ping is working for the 8.8.8.8 IP address.
+Running on a different IP address, the request fails:
+
+[source,bash]
+----
+[student@workstation ~]$ oc exec -ti test-egress -- ping -c2 4.4.4.4
+PING 4.4.4.4 (4.4.4.4) 56(84) bytes of data.
+
+--- 1.1.1.1 ping statistics ---
+2 packets transmitted, 0 received, 100% packet loss, time 1012ms
+
+----
+Running from the same container any DNS entry also fails as the egress firewall blocks access to the IP address translated from the internal OpenShift DNS server.
+
+[source,bash]
+----
+[student@workstation ~]$ oc exec -ti test-egress -- curl https://docs.openshift.com -I -m2
+curl: (28) Failed to connect to docs.openshift.com port 443 after 1511 ms: Operation timed out
+command terminated with exit code 28
+----
+
+.Limitations of an egress firewall
+[IMPORTANT]
+======
+An egress firewall has the following limitations:
+
+. Egress firewall rules do not apply to traffic that goes through routers. Any user with permission to create a Route CR object can bypass egress firewall policy rules by creating a route that points to a forbidden destination.
+
+. No project can have more than one `EgressFirewall` sobject.
+
+. A maximum of one `EgressFirewall` resource with a maximum of 8,000 rules can be defined per project.
+
+. If you are using the OVN-Kubernetes network plugin with shared gateway mode in Red Hat OpenShift Networking, return ingress replies are affected by egress firewall rules. If the egress firewall rules drop the ingress reply destination IP, the traffic is dropped.
+
+. Violating any of these restrictions results in a broken egress firewall for the project, and might cause all external network traffic to be dropped.
+
+. An Egress Firewall resource can be created in the `kube-node-lease`, `kube-public`, `kube-system`, `openshift` and `openshift-` projects.
+
+. The egress firewall policy rules are evaluated in the order that they are defined, from first to last. The first rule that matches an egress connection from a pod applies. Any subsequent rules are ignored for that connection.
+
+======

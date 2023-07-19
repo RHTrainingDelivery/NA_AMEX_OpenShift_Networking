@@ -1,0 +1,285 @@
+:pygments-style: tango
+:source-highlighter: pygments
+:toc:
+:toclevels: 7
+:sectnums:
+:sectnumlevels: 6
+:numbered:
+:chapter-label:
+:icons: font
+ifndef::env-github[:icons: font]
+ifdef::env-github[]
+:status:
+:outfilesuffix: .adoc
+:caution-caption: :fire:
+:important-caption: :exclamation:
+:note-caption: :paperclip:
+:tip-caption: :bulb:
+:warning-caption: :warning:
+endif::[]
+:imagesdir: ./images/
+
+
+=== Workshop: Installing Network Observability
+
+[WARNING]
+======
+The process described in the section is for testing purposes. Due to limitations in our infrastructure, the environment needs be customized to minimize resource consumption. In a real world condition though, you need to install Red Hat OpenShift Data Foundation or use an underlying object storage solution.
+======
+
+Install a slimmed version of Loki (the current Logging solution provided by OpenShift storess all data collected from application and infrastructure logs in a robust storage systems).
+
+To create a project that is used to install the Network Observability Operator on OpenShift, execute the following command:
+
+[source,bash]
+----
+[student@workstation ~]$ oc new-project netobserv
+----
+
+Loki requires a large storage to keep log information and Red Hat OpenShift Data Foundation (ODF), which is powered by Ceph, simplifies this kind of management. 
+
+The intent of ODF is to create a robust distributed storage in spread in multiple hosts. 
+
+It resembles Linux Logical Volume Management (LVM), but instead of creating a transparent layer in a single machine it goes beyond and create a common access point to store data in multiple hosts.
+
+As we are in a proof of concept environment, the easiest path is to create a mount point that stores data from logs. Create the `pvc.yaml` file as follows:
+
+[source,yml]
+----
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-store
+spec:
+  resources:
+    requests:
+      storage: 1G
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+----
+
+The file create a `loki-store` PersistentVolumeClaim resource that trigger in OpenShift the need to create a mount point that stores data from Loki.
+
+After creating it, run the following command:
+
+[source,bash]
+----
+[student@workstation ~]$ oc apply -f pvc.yaml
+----
+
+In the following step, three elements are created:
+
+. a `local-config.yaml` configuration file and stored in OpenShift as a ConfigMap. In a nutshell, it provides Loki configuration about:
+.. ports inside your cluster, 
+.. directories used by Loki to store data 
+.. overall resource usage
+. a `Pod` that runs Loki with the PVC created in the previous step and  
+
+.Create the `resources.yaml` file with your preferred text editor:
+[source,yml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+data:
+  local-config.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9096
+      http_server_read_timeout: 1m
+      http_server_write_timeout: 1m
+      log_level: error
+    target: all
+    common:
+      path_prefix: /loki-store
+      storage:
+        filesystem:
+          chunks_directory: /loki-store/chunks
+          rules_directory: /loki-store/rules
+      replication_factor: 1
+      ring:
+        instance_addr: 127.0.0.1
+        kvstore:
+          store: inmemory
+    compactor:
+      compaction_interval: 5m
+      retention_enabled: true
+      retention_delete_delay: 2h
+      retention_delete_worker_count: 150      
+    frontend:
+      compress_responses: true
+    ingester:
+      chunk_encoding: snappy
+      chunk_retain_period: 1m
+    query_range:
+      align_queries_with_step: true
+      cache_results: true
+      max_retries: 5
+      results_cache:
+        cache:
+          enable_fifocache: true
+          fifocache:
+            max_size_bytes: 500MB
+            validity: 24h
+      parallelise_shardable_queries: true
+    query_scheduler:
+      max_outstanding_requests_per_tenant: 2048
+    schema_config:
+      configs:
+        - from: 2022-01-01
+          store: boltdb-shipper
+          object_store: filesystem
+          schema: v11
+          index:
+            prefix: index_
+            period: 24h
+    storage_config:
+      filesystem:
+        directory: /loki-store/storage
+      boltdb_shipper:
+        active_index_directory: /loki-store/index
+        shared_store: filesystem
+        cache_location: /loki-store/boltdb-cache
+        cache_ttl: 24h
+    limits_config:    
+      ingestion_rate_strategy: global 
+      ingestion_rate_mb: 4
+      ingestion_burst_size_mb: 6
+      max_label_name_length: 1024
+      max_label_value_length: 2048
+      max_label_names_per_series: 30
+      reject_old_samples: true
+      reject_old_samples_max_age: 15m
+      creation_grace_period: 10m
+      enforce_metric_name: false
+      max_line_size: 256000
+      max_line_size_truncate: false
+      max_entries_limit_per_query: 10000
+      max_streams_per_user: 0
+      max_global_streams_per_user: 0
+      unordered_writes: true
+      max_chunks_per_query: 2000000
+      max_query_length: 721h
+      max_query_parallelism: 32
+      max_query_series: 10000
+      cardinality_limit: 100000
+      max_streams_matchers_per_query: 1000
+      max_concurrent_tail_requests: 10
+      retention_period: 24h
+      max_cache_freshness_per_query: 5m
+      max_queriers_per_tenant: 0
+      per_stream_rate_limit: 3MB
+      per_stream_rate_limit_burst: 15MB
+      max_query_lookback: 0
+      min_sharding_lookback: 0s
+      split_queries_by_interval: 1m
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: loki
+  labels:
+    app: loki
+spec:
+  securityContext:
+    runAsGroup: 1000
+    runAsUser: 1000
+    fsGroup: 1000
+  volumes:
+    - name: loki-store
+      persistentVolumeClaim:
+        claimName: loki-store
+    - name: loki-config
+      configMap:
+        name: loki-config
+  containers:
+    - name: loki
+      image: grafana/loki:2.6.1
+      volumeMounts:
+        - mountPath: "/loki-store"
+          name: loki-store
+        - mountPath: "/etc/loki"
+          name: loki-config
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: loki
+spec:
+  selector:
+    app: loki
+  ports:
+    - port: 3100
+      protocol: TCP
+----
+
+To deploy these resources in the same project, run the following command:
+
+[source,bash]
+----
+[student@workstation ~]$ oc apply -f resources.yaml
+----
+
+[WARNING]
+======
+In a production environment, install Loki with OperatorHub. To configure, deploy the `LokiStack` custom resource available in the web console installation. 
+======
+
+[NOTE]
+======
+From this point the configuration can be followed as it is in a production environment
+======
+
+Deploy the Network Observability Operator from the OperatorHub.
+
+.In the OpenShift Container Platform web console, click Operators → OperatorHub.
+
+.Choose *Network Observability Operator* from the list of available Operators in the OperatorHub, and click *Install*.
+
+.Select the checkbox *Enable Operator recommended cluster monitoring* on this Namespace.
+
+.Select Enable *web console* integration.
+
+.Navigate to Operators → Installed Operators. Under Provided APIs for Network Observability, select the Flow Collector link.
+
+.Navigate to the *Flow Collector* tab, and click *Create FlowCollector*. Make the following selections in the form view:
+
+[WARNING]
+======
+The current configuration works for the current environment, however some customization might be needed in a production environment. 
+======
+
+.Click Create.
+
+To confirm this was successful, when you navigate to Observe you should see *Network Traffic* listed in the options.
+
+To  verify the traffic *clear all filters* to check the which projects are creating traffic inside the entire cluster. The Overview tab provides a multitude of graphics with information on how much traffic is going through the cluster, which are the top 5 flow rates.
+
+To check which projects and pods are creating traffic, open the Traffic flow tab.
+
+To evaluate a graphical view of data flow, select the Topology tab.
+
+To create a load in a project, use the following command to deploy a pod that deploy multiple pods to check the traffic. The namespace created by this application is `kube-traffic-generator`.
+
+[source,bash]
+----
+oc apply -f https://raw.githubusercontent.com/netobserv/documents/main/examples/kube-traffic-generator/traffic.yaml
+----
+
+[IMPORTANT]
+======
+To avoid overload from our environment, run the following command:
+
+oc delete -f https://raw.githubusercontent.com/netobserv/documents/main/examples/kube-traffic-generator/traffic.yaml
+
+======

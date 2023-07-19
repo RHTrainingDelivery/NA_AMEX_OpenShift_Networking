@@ -1,0 +1,200 @@
+:pygments-style: tango
+:source-highlighter: pygments
+:toc:
+:toclevels: 7
+:sectnums:
+:sectnumlevels: 6
+:numbered:
+:chapter-label:
+:icons: font
+ifndef::env-github[:icons: font]
+ifdef::env-github[]
+:status:
+:outfilesuffix: .adoc
+:caution-caption: :fire:
+:important-caption: :exclamation:
+:note-caption: :paperclip:
+:tip-caption: :bulb:
+:warning-caption: :warning:
+endif::[]
+:imagesdir: ./images/
+
+
+=== Workshop: Configuring Network logging level
+
+Each OpenShift projects supports a different networking logging level. Eventually a firewall rule is too restrictive an it needs to be softened. To capture these logs, use the Namespace resource to configure the levels. For that purpose, create the following source code into a text file named `network-logging.yaml`.
+
+[source,yml]
+----
+kind: Namespace
+apiVersion: v1
+metadata:
+  name: network-logging
+  annotations:
+    k8s.ovn.org/acl-logging: |-
+      {
+        "deny": "debug",
+        "allow": "debug"
+      }
+----
+
+After creating it, run the following command:
+
+[source,bash]
+----
+[student@workstation ~]$ oc apply -f network-logging.yaml
+----
+
+Alternatively, to create a namespace the process is similar to creating a project:
+
+[source,bash]
+----
+[student@workstation ~]$ oc new-project network-logging
+----
+
+Once the project is created, edit the namespace definition by using the `oc annotate` command:
+
+[source,bash]
+----
+[student@workstation ~]$ oc annotate namespace network-logging k8s.ovn.org/acl-logging='{ "deny": "debug", "allow": "debug" }'
+----
+
+
+To evaluate the logging level, adjust the `network-logging` project to configure two network policies that blocks the ingress and egress traffic from the project to another project, but allows communication within the same project. This way any attempt to communicate outside the current project will trigger a message
+
+.Create the `network-policies.yaml` file with your preferred text editor:
+[source,yml]
+----
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+spec:
+  podSelector:
+    matchLabels:
+  policyTypes:
+  - Ingress
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-same-project
+spec:
+  podSelector: {}
+  policyTypes:
+   - Ingress
+   - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+       - namespaceSelector:
+          matchLabels:
+            namespace: network-logging
+
+----
+
+To deploy these network policies in the same project, run the following command:
+
+[source,bash]
+----
+[student@workstation ~]$ oc apply -f network-policies.yaml
+networkpolicy.networking.k8s.io/deny-all created
+networkpolicy.networking.k8s.io/allow-from-same-project created
+----
+
+
+.Create, using your preferred text editor, the following content in a file named `server.yaml`:
+[source,yml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: server
+spec:
+  containers:
+    - name: server
+      image: registry.access.redhat.com/rhel7/rhel-tools
+      command: ["/bin/sh", "-c"]
+      args:
+        ["sleep inf"]
+----
+The previous code creates a pod named server that contains some network tools to test our connectivity.
+
+.Create the pod:
+[source,bash]
+----
+[student@workstation ~]$ oc create -f server.yaml -n network-logging
+----
+
+.Create, using your preferred text editor the following content in a file named `client.yaml`:
+
+[source,yml]
+----
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client
+spec:
+  containers:
+    - name: client
+      image: registry.access.redhat.com/rhel7/rhel-tools
+      command: ["/bin/sh", "-c"]
+      args:
+        ["sleep inf"]
+
+----
+The previous code creates a pod named client using tools from RHEL. In a later moment execute some tools to check the connectivity. 
+
+Create a new project that another pod runs:
+
+[source,bash]
+----
+[student@workstation ~]$ oc new-project network-logging-2
+----
+Create the pod:
+
+[source,bash]
+----
+[student@workstation ~]$ oc create -f client.yaml -n network-logging-2
+----
+
+
+.Capture the IP address from the listener and store it in the POD_IP environment variable
+[source,bash]
+----
+[student@workstation ~]$ POD_IP=$(oc get pods server -n network-logging -o jsonpath='{.status.podIP}')
+----
+
+.Ping the server pod that is running on the network-logging project
+[source,bash]
+----
+[student@workstation ~]$ oc exec -it client -n network-logging-2 -- /bin/ping -c 2 $POD_IP
+PING 10.10.2.25 (10.10.2.25) 56(84) bytes of data.
+--- 10.10.2.25 ping statistics ---
+2 packets transmitted, 0 received, 100% packet loss, time 1043ms
+
+command terminated with exit code 1
+
+----
+To check the logs from the network logging, the openshift-ovn-kubernetes project offers ways to check the logs by checking the /var/log/ovn directory in one of these containers.
+
+To check these packets that were blocked you need to evaluate each of these pods and identify which one was responsible to capture the log. 
+
+.Connect to all pods managed by the daemonset
+[source,bash]
+----
+[student@workstation ~]$  oc debug daemonset/ovnkube-node -n openshift-ovn-kubernetess
+If you don't see a command prompt, try pressing enter.
+----
+
+.Evaluate the logs:
+[source,bash]
+----
+sh-4.4# cat /var/log/ovn/acl-audit-log.log 
+2023-07-18T15:43:03.467Z|00004|acl_log(ovn_pinctrl0)|INFO|name="network-logging_ingressDefaultDeny", verdict=drop, severity=debug, direction=to-lport: icmp,vlan_tci=0x0000,dl_src=0a:58:0a:0a:02:01,dl_dst=0a:58:0a:0a:02:19,nw_src=10.9.2.11,nw_dst=10.10.2.25,nw_tos=0,nw_ecn=0,nw_ttl=63,nw_frag=no,icmp_type=8,icmp_code=0
+2023-07-18T15:43:04.489Z|00005|acl_log(ovn_pinctrl0)|INFO|name="network-logging_ingressDefaultDeny", verdict=drop, severity=debug, direction=to-lport: icmp,vlan_tci=0x0000,dl_src=0a:58:0a:0a:02:01,dl_dst=0a:58:0a:0a:02:19,nw_src=10.9.2.11,nw_dst=10.10.2.25,nw_tos=0,nw_ecn=0,nw_ttl=63,nw_frag=no,icmp_type=8,icmp_code=0
+
+----

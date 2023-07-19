@@ -156,10 +156,10 @@ The nodeSelector field must either match with the `IngressNodeFirewallConfig` cu
 ====
 
 To check what network devices are available on a host, access it using a debug pod:
+
 [source,bash]
 ----
 [student@workstation ~]$ oc debug node/master01
-Warning: would violate PodSecurity "restricted:latest": host namespaces (hostNetwork=true, hostPID=true, hostIPC=true), privileged (container "container-00" must not set securityContext.privileged=true), allowPrivilegeEscalation != false (container "container-00" must set securityContext.allowPrivilegeEscalation=false), unrestricted capabilities (container "container-00" must set securityContext.capabilities.drop=["ALL"]), restricted volume types (volume "host" uses restricted volume type "hostPath"), runAsNonRoot != true (pod or container "container-00" must set securityContext.runAsNonRoot=true), runAsUser=0 (container "container-00" must not set runAsUser=0), seccompProfile (pod or container "container-00" must set securityContext.seccompProfile.type to "RuntimeDefault" or "Localhost")
 Starting pod/master01-debug ...
 To use host binaries, run `chroot /host`
 Pod IP: 192.168.50.10
@@ -168,6 +168,7 @@ sh-4.4#
 ----
 
 To identify which network devices are available run the following command:
+
 [source,bash]
 ----
 sh-4.4# ip a
