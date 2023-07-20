@@ -19,7 +19,8 @@ ifdef::env-github[]
 endif::[]
 :imagesdir: ./images/
 
-==  <CHAPTER TITLE>
+==  Troubleshooting Software Defined Network Issues
 
 :sectnums:
-include::Chapters/CH1/Section1.adoc[]
+include::Chapters/CH2/Network-Logging-Level.adoc[]
+include::Chapters/CH2/Network-Observability.adoc[]
