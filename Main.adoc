@@ -1,7 +1,7 @@
 = {subject}
-:subject: <Subject for cover goes here>
-:description:  <Description for cover goes here>
-Travis Michette <tmichett@redhat.com>
+:subject: Advanced OpenShift Networking Troubleshooting and Configuration
+:description:  Advanced OpenShift Networking Troubleshooting and Configuration
+Ricardo Taniguchi <jtaniguc@redhat.com>
 :doctype: book
 :customer:  GLS
 :listing-caption: Listing
